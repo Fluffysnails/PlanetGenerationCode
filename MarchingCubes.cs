@@ -1,15 +1,19 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
-using UnityEngine.Jobs;
-
+using System.Threading;
+using Unity.Burst;
+using Unity.Jobs;
+[BurstCompile]
 public class MarchingCubes : MonoBehaviour
 {
     //variables
-    public GameObject cube, Chunk;
+    public GameObject Chunk, Player;
 	public ComputeShader terrainCompute, valueCompute;
-    public int worldSizeX,worldSizeY,worldSizeZ, totalWorldSize, planetSize, chunkSize;
+    public int worldSizeX,worldSizeY,worldSizeZ, totalWorldSize, planetSize, chunkSize, chunksPerFrame, renderDist;
     public chunk[] worldData;
+	
 	private int[,,] worldChunks;
     public float noiseThreshold, noiseScale, noiseHeightMultiplier;
 	public float MaxHeight = 30;
@@ -20,18 +24,27 @@ public class MarchingCubes : MonoBehaviour
     MeshFilter meshFilter;
 	MeshRenderer meshRenderer;
     private float terrainSurface = 0.5f, seed;
-	private bool initialized = false;
-	public float frame = 0;
+	private bool initialized = false, chunkFound = false;
+	public int frame = 0;
 	public int yChunk = 0,zChunk = 0, xChunk = 0;
 	public Texture2D[] textureAtlas;
-	//[HideInInspector]
-	public RenderTexture texture3D;
+	//Should fix lag
+	private int count,configIndex,edgeIndex,indice, currentChunkPosX,currentChunkPosY,currentChunkPosZ,ChunkIndexX,ChunkIndexY,ChunkIndexZ;
+	private float random,value1,value2,mu,Dist,xy,xz,yz,yx,zx,zy;
+	Vector3Int corner, startingPos;
+	float[] cube = new float[8];
+	Vector3 vert1, vert2, pointOnEdge, vertPosition, normal;
+	private Vector3 lastPlayerPos = new Vector3(100000,100000,100000);
+	Dictionary<Vector3, chunk> chunkDictionary = new Dictionary<Vector3, chunk>();
+	List<chunk> chunksLoaded = new List<chunk>();
     //i figured out how to make a class and made a chunk class!
+	    
     public class chunk
     {
     public int ChunkX,ChunkY,ChunkZ;
     public point[,,] TerrainType;
 	public GameObject Chunk;
+	public bool empty = true;
     }
 	public class point
 	{
@@ -45,10 +58,85 @@ public class MarchingCubes : MonoBehaviour
 		GeneratePlanet();
 		initialized = true;
 	}
+
+	private void Update()
+	{
+
+			PlayerMovementUpdate();
+			lastPlayerPos = new Vector3(Mathf.RoundToInt(Player.transform.position.x/16)*16,Mathf.RoundToInt(Player.transform.position.y/16)*16,Mathf.RoundToInt(Player.transform.position.z/16)*16);
+		
+	}
+
+	void PlayerMovementUpdate()
+	{/*
+		if(frame < worldSizeX * worldSizeY * worldSizeZ - 1 && initialized)
+		{
+		for(int i = 0; i < chunksPerFrame; i++)
+		{
+		if(frame < worldSizeX * worldSizeY * worldSizeZ - 1)
+		{
+		GenChunk(frame,worldData[frame].ChunkX,worldData[frame].ChunkY,worldData[frame].ChunkZ);
+		frame++;
+		}
+		}
+		}*/
+					for(int i = 0; i < chunksLoaded.Count; i++)
+					{
+						chunksLoaded[i].Chunk.SetActive(false);
+					}
+					chunksLoaded.Clear();
+			for(int x = 0; x < renderDist; x++)
+			{
+				for(int y= 0; y < renderDist; y++)
+				{
+					for(int z = 0; z < renderDist; z++)
+					{
+						LoadChunk(Player.transform.position + this.transform.position + new Vector3((x - renderDist/2)*16,(y - renderDist/2)*16,(z - renderDist/2)*16));
+					}
+				}
+			}
+				
+
+		
+		
+	}
+
+	void LoadChunk(Vector3 pos)
+	{
+		//(ChunkPosX*-chunkSize) + worldSizeX/2
+		if(pos.x <=   worldSizeX/2 && pos.x >= -worldSizeX/2+16)
+		{
+		
+			if(pos.y <=   worldSizeY/2 && pos.y >= -worldSizeY/2+16)
+			{
+				
+				if(pos.z <=   worldSizeZ/2 && pos.z >= -worldSizeZ/2+16)
+				{
+
+					currentChunkPosX = Mathf.RoundToInt(-pos.x/16 + worldSizeX/32);
+					currentChunkPosY = Mathf.RoundToInt(-pos.y/16 + worldSizeX/32);
+					currentChunkPosZ = Mathf.RoundToInt(-pos.z/16 + worldSizeX/32);
+					Debug.Log(new Vector3(currentChunkPosX,currentChunkPosY,currentChunkPosZ));
+					if(chunkDictionary.ContainsKey(new Vector3(currentChunkPosX,currentChunkPosY,currentChunkPosZ)))
+					{
+						 worldData[worldChunks[currentChunkPosX,currentChunkPosY,currentChunkPosZ]].Chunk.SetActive(true);
+						 chunksLoaded.Add(worldData[worldChunks[currentChunkPosX,currentChunkPosY,currentChunkPosZ]]);
+					}
+					else
+					{
+						GenChunk(worldChunks[currentChunkPosX,currentChunkPosY,currentChunkPosZ], currentChunkPosX,currentChunkPosY,currentChunkPosZ);
+						chunkDictionary.Add(new Vector3(currentChunkPosX,currentChunkPosY,currentChunkPosZ), worldData[worldChunks[currentChunkPosX,currentChunkPosY,currentChunkPosZ]]);
+						chunksLoaded.Add(worldData[worldChunks[currentChunkPosX,currentChunkPosY,currentChunkPosZ]]);
+					}
+				}
+			}
+		}
+	}
+	
 	//Generates a planet
     public void GeneratePlanet()
     {
-		seed = Random.Range(-100,100);
+		seed = UnityEngine.Random.Range(-100,100);
         totalWorldSize = (worldSizeX/chunkSize) * (worldSizeZ/chunkSize) * (worldSizeY/chunkSize);
         worldData = new chunk[totalWorldSize];
 		worldChunks = new int[(worldSizeX/chunkSize),(worldSizeY/chunkSize) , (worldSizeZ/chunkSize)];
@@ -59,17 +147,11 @@ public class MarchingCubes : MonoBehaviour
                 {
                 for(int z = 0; z < (worldSizeZ/chunkSize); z++)
                 {
-                worldData[count] = new chunk();
-                worldData[count].ChunkX = x;
-				worldData[count].ChunkY = y;
-                worldData[count].ChunkZ = z;
-				worldChunks[x,y,z] = count;
-                worldData[count].TerrainType = new point[chunkSize,chunkSize,chunkSize];
 
-				worldData[count].Chunk = Instantiate(Chunk,new Vector3((x*-chunkSize) - worldSizeX/2,(y*-chunkSize) - worldSizeX/2,(z*-chunkSize) - worldSizeX/2), Quaternion.identity);
-				worldData[count].Chunk.transform.parent = this.transform;
-				worldChunks[x,y,z] = count; 
-				GenChunk(count,worldData[count].ChunkX,worldData[count].ChunkY,worldData[count].ChunkZ);
+				worldChunks[x,y,z] = count;
+
+
+				//GenChunk(count,worldData[count].ChunkX,worldData[count].ChunkY,worldData[count].ChunkZ);
                 count++;
 				    }    
 					}
@@ -77,76 +159,84 @@ public class MarchingCubes : MonoBehaviour
         }
 
 		}
-		//gets each point's data
-    public float GetDataFromPoint(float x,float y, float z)
-	{
-
-		float Dist =  Vector3.Distance(new Vector3(-worldSizeX/4,-worldSizeY/4,-worldSizeZ/4),new Vector3(x,y,z));
-		Vector3 normal = (new Vector3(x-worldSizeX/2,y-worldSizeY/2,z-worldSizeZ/2)).normalized;
-			return Mathf.Clamp((1 - Mathf.Clamp(Dist - (planetSize + noiseHeightMultiplier/2 - (noiseHeightMultiplier*PerlinNoise3DNotSymmetrical(seed+normal.x*noiseThreshold,seed+normal.y*noiseThreshold,seed+normal.z*noiseThreshold))) ,0,1)),0,1);
-		
-	}
-
 
     
     //generates a chunk
     void GenChunk(int chunkID, int ChunkPosX, int ChunkPosY, int ChunkPosZ)
     {
-        int count = 0;
+		worldData[chunkID] = new chunk();
+        worldData[chunkID].ChunkX = ChunkPosX;
+		worldData[chunkID].ChunkY = ChunkPosY;
+        worldData[chunkID].ChunkZ = ChunkPosZ;
+		worldData[chunkID].Chunk = Instantiate(Chunk,new Vector3((ChunkPosX*-chunkSize) + worldSizeX/2,(ChunkPosY*-chunkSize) + worldSizeX/2,(ChunkPosZ*-chunkSize) + worldSizeX/2) + this.transform.position, Quaternion.identity);
+		worldData[chunkID].Chunk.transform.parent = this.transform;
         for(int x = 0; x < chunkSize; x++)
         {
             for(int y = 0; y < chunkSize; y++)
             {
                 for(int z = 0; z < chunkSize; z++)
                 {				
-					worldData[chunkID].TerrainType[x,y,z] = new point();
-					float random = Random.Range(0,1);
                     //checking nearby land
-                    float[] cube = new float[8];
-                    for (int i = 0; i < 8; i++) {
+                    							//if(GetDataFromPoint(((x)+(ChunkPosX*-chunkSize)),((y) + (ChunkPosY*-chunkSize)),((z)+(ChunkPosZ*-chunkSize))) != 0 && GetDataFromPoint(((x)+(ChunkPosX*-chunkSize)),((y) + (ChunkPosY*-chunkSize)),((z)+(ChunkPosZ*-chunkSize))) != 1)
+							//{
+								                   for (int i = 0; i < 8; i++) {
 						cube[i] = 0;
-                        Vector3Int corner = new Vector3Int(x, y, z) + CornerTable[i]; 
+                        corner = new Vector3Int(x, y, z) + CornerTable[i]; 
 							cube[i] = GetDataFromPoint(((corner.x)+(ChunkPosX*-chunkSize)),((corner.y) + (ChunkPosY*-chunkSize)),((corner.z)+(ChunkPosZ*-chunkSize)));
+
 					}
 					
                     MarchCube(new Vector3(x, y, z), cube, chunkID,ChunkPosX, ChunkPosY, ChunkPosZ);
 
                     
-                    count++;
+							//}
                 }
             }
         }
         BuildMesh(chunkID);
+		
     }
+
+			//gets each point's data
+    public float GetDataFromPoint(float x,float y, float z)
+	{
+
+		Dist =  Vector3.Distance(new Vector3(-worldSizeX*.5f,-worldSizeY*.5f,-worldSizeZ*.5f),new Vector3(x,y,z));
+		normal = (new Vector3(x-worldSizeX*.5f,y-worldSizeY*.5f,z-worldSizeZ*.5f)).normalized;
+			return Mathf.Clamp((1 - Mathf.Clamp(Dist - (planetSize + noiseHeightMultiplier*.5f - (noiseHeightMultiplier*PerlinNoise3DNotSymmetrical(seed+normal.x*noiseThreshold,seed+normal.y*noiseThreshold,seed+normal.z*noiseThreshold))) ,0,1)),0,1);
+		
+	}
+
+
 // march the cubes
 //credit goes to https://github.com/b3agz/how-to-make-7-days-to-die-in-unity/blob/master/01-marching-cubes/Marching.cs
     void MarchCube (Vector3 position, float[] cube, int chunkID,int ChunkPosX, int ChunkPosY, int ChunkPosZ) {
 
         // Get the configuration index of this cube.
-        int configIndex = GetCubeConfiguration(cube);
+        configIndex = GetCubeConfiguration(cube);
 
         //checks if in terrain or out of terrian (ifso, dont worry about it)
         if (configIndex == 0 || configIndex == 255)
             return;
 
         // Loop through the triangles. There are never more than 5 triangles to a cube and only three vertices to a triangle.
-        int edgeIndex = 0;
+        edgeIndex = 0;
         for(int i = 0; i < 5; i++) {
             for(int p = 0; p < 3; p++) {
 
                 // Get the current indice. We increment triangleIndex through each loop.
-                int indice = TriangleTable[configIndex, edgeIndex];
+                indice = TriangleTable[configIndex, edgeIndex];
 
                 // If the current edgeIndex is -1, there are no more indices and we can exit the function.
                 if (indice == -1)
                     return;
 		
                 // Get the vertices for the start and end of this edge.
-                Vector3 vert1 = (position + EdgeTable[indice, 0]);
-                Vector3 vert2 = (position + EdgeTable[indice, 1]);
+                vert1 = (position + EdgeTable[indice, 0]);
+                vert2 = (position + EdgeTable[indice, 1]);
 				
                 // Get the midpoint of this edge.
-                Vector3 vertPosition = InterpolateEdgePosition(.5f,vert1,vert2,chunkID,ChunkPosX,ChunkPosY,ChunkPosZ)/scale; // send the data to be interpolated
+                vertPosition = InterpolateEdgePosition(.5f,vert1,vert2,chunkID,ChunkPosX,ChunkPosY,ChunkPosZ)/scale; // send the data to be interpolated
 
                 // Add to our vertices and triangles list and incremement the edgeIndex.
                 vertices.Add(vertPosition);
@@ -160,14 +250,14 @@ public class MarchingCubes : MonoBehaviour
 // interpolates the data
 	    public Vector3 InterpolateEdgePosition(float isolevel, Vector3 vertex1, Vector3 vertex2, int chunkID,int ChunkPosX, int ChunkPosY, int ChunkPosZ)
     {
-        Vector3 pointOnEdge = Vector3.zero;
-		float value1 = GetDataFromPoint(((vertex1.x)+(ChunkPosX*-chunkSize)),((vertex1.y) + (ChunkPosY*-chunkSize)),((vertex1.z)+(ChunkPosZ*-chunkSize)));
-		float value2 = GetDataFromPoint(((vertex2.x)+(ChunkPosX*-chunkSize)),((vertex2.y) + (ChunkPosY*-chunkSize)),((vertex2.z)+(ChunkPosZ*-chunkSize)));
+        pointOnEdge = Vector3.zero;
+		value1 = GetDataFromPoint(((vertex1.x)+(ChunkPosX*-chunkSize)),((vertex1.y) + (ChunkPosY*-chunkSize)),((vertex1.z)+(ChunkPosZ*-chunkSize)));
+		value2 = GetDataFromPoint(((vertex2.x)+(ChunkPosX*-chunkSize)),((vertex2.y) + (ChunkPosY*-chunkSize)),((vertex2.z)+(ChunkPosZ*-chunkSize)));
         if (Mathf.Approximately(isolevel - value1,0) == true) return vertex1;
         if (Mathf.Approximately(isolevel - value2, 0) == true) return vertex2;
         if (Mathf.Approximately(value1 - value2, 0) == true) return vertex1;
 
-        float mu = (isolevel - value1) / (value2 - value1);
+        mu = (isolevel - value1) / (value2 - value1);
         pointOnEdge.x = vertex1.x + mu * (vertex2.x - vertex1.x);
         pointOnEdge.y = vertex1.y + mu * (vertex2.y - vertex1.y);
         pointOnEdge.z = vertex1.z + mu * (vertex2.z - vertex1.z);
@@ -199,32 +289,43 @@ public class MarchingCubes : MonoBehaviour
         triangles.Clear();
 
     }
+	void OptimizeMesh()
+	{
+		
+	}
 
     void BuildMesh (int chunkID) {
+		if(triangles.Count != 0)
+		{
+		worldData[chunkID].Chunk.SetActive(true);
 		meshFilter = worldData[chunkID].Chunk.GetComponent<MeshFilter>();
 		meshRenderer = worldData[chunkID].Chunk.GetComponent<MeshRenderer>();
         Mesh mesh = new Mesh();
         mesh.vertices = vertices.ToArray();
         mesh.triangles = triangles.ToArray();
-        mesh.RecalculateNormals();
         meshFilter.mesh = mesh;
 		worldData[chunkID].Chunk.GetComponent<MeshCollider>().sharedMesh = mesh;
     	vertices.Clear();
         triangles.Clear();
+		
+		}
+
+			
+
     }
 
 
     // credit goes to: https://answers.unity.com/questions/938178/3d-perlin-noise.html
- public static float PerlinNoise3DNotSymmetrical(float x, float y, float z)
+ public float PerlinNoise3DNotSymmetrical(float x, float y, float z)
  {
      y += 1;
      z += 2;
-     float xy = _perlin3DFixed(x, y);
-     float xz = _perlin3DFixed(x, z);
-     float yz = _perlin3DFixed(y, z);
-     float yx = _perlin3DFixed(y, x);
-     float zx = _perlin3DFixed(z, x);
-     float zy = _perlin3DFixed(z, y);
+    xy = _perlin3DFixed(x, y);
+    xz = _perlin3DFixed(x, z);
+    yz = _perlin3DFixed(y, z);
+    yx = _perlin3DFixed(y, x);
+    zx = _perlin3DFixed(z, x);
+    zy = _perlin3DFixed(z, y);
      return xy * xz * yz * yx * zx * zy;
  }
  //stolen from source above
@@ -233,14 +334,14 @@ public class MarchingCubes : MonoBehaviour
      return Mathf.Sin(Mathf.PI * Mathf.PerlinNoise(a, b));
  }
 //same as previous function
- public static float PerlinNoise3D(float x, float y, float z)
+ public float PerlinNoise3D(float x, float y, float z)
  {
-     float xy = Mathf.PerlinNoise(x, y);
-     float xz = Mathf.PerlinNoise(x, z);
-     float yz = Mathf.PerlinNoise(y, z);
-     float yx = Mathf.PerlinNoise(y, x);
-     float zx = Mathf.PerlinNoise(z, x);
-     float zy = Mathf.PerlinNoise(z, y);
+     xy = Mathf.PerlinNoise(x, y);
+     xz = Mathf.PerlinNoise(x, z);
+     yz = Mathf.PerlinNoise(y, z);
+     yx = Mathf.PerlinNoise(y, x);
+     zx = Mathf.PerlinNoise(z, x);
+     zy = Mathf.PerlinNoise(z, y);
  
      return (xy + xz + yz + yx + zx + zy) / 6;
  }
@@ -537,3 +638,4 @@ public class MarchingCubes : MonoBehaviour
     };
 
 }
+
